@@ -1,7 +1,7 @@
 /*!
  * @name 聚合无损源 v1
  * @description 酷我/网易/酷狗真FLAC；QQ 支持 24bit 高解析（视曲目资源），咪咕由自建链路取真音源，取不到才回落补档
- * @version 1.2.1
+ * @version 1.2.2
  * @author 王工
  * @homepage https://github.com/WangMCweijia/lx-source-dist
  */
@@ -17,7 +17,7 @@
  * 所以加载时把源码里的 globalThis.lx 替换成注入参数，各用各的 lx 对象。
  */
 
-const AGG_VERSION = '1.2.1'
+const AGG_VERSION = '1.2.2'
 
 const ORDER_MAP = {"kw":["molan","doubao"],"wy":["molan","doubao"],"kg":["wkg","doubao","molan"],"mg":["wmc","doubao","molan"],"tx":["wmc","doubao","molan"]}
 
@@ -224,7 +224,9 @@ send(EVENT_NAMES.inited, {
   status: true,
   openDevTools: false,
   sources: {
-    kw: { name: '酷我·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac', 'flac24bit'] },
+    // kw 不声明 flac24bit：实测请求 24bit 返回的是与 flac 完全相同的 16bit 文件
+    // （同字节数、同 STREAMINFO），声明了只是给音质菜单多一个拿不到的选项。
+    kw: { name: '酷我·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
     wy: { name: '网易·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
     kg: { name: '酷狗·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac', 'flac24bit'] },
     tx: { name: 'QQ·真无损', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac', 'flac24bit'] },
