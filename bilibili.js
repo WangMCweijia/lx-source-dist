@@ -588,6 +588,8 @@ async function importMusicSheet(urlLike) {
 
 module.exports = {
   platform: 'bilibili',
+  description:
+    '把 B 站视频当歌听：搜视频、多 P 拆轨、音乐榜与每周必看、公开收藏夹导入。取流优先对象存储直链，避开 P2P 节点。',
   version: '1.0.0',
   author: '音狐',
   srcUrl:
