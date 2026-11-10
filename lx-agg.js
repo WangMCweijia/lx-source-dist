@@ -1,7 +1,7 @@
 /*!
  * @name 聚合无损源 v2
  * @description 狐兔直连打头（五平台七档并发择优、母带/全景声），失败自动退第三方聚合兜底；加密容器一律不收
- * @version 2.0.0
+ * @version 2.1.0
  * @author 王工
  * @homepage https://github.com/WangMCweijia/lx-source-dist
  */
@@ -23,7 +23,7 @@
  * 所以加载时把源码里的 globalThis.lx 替换成注入参数，各用各的 lx 对象。
  */
 
-const AGG_VERSION = '2.0.0'
+const AGG_VERSION = '2.1.0'
 
 const ORDER_MAP = {"kw":["direct","molan","doubao"],"wy":["direct","molan","doubao"],"kg":["direct","wkg","doubao"],"mg":["direct","wmc","doubao","molan"],"tx":["direct","wmc","doubao","molan"]}
 
