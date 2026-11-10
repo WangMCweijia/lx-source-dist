@@ -347,25 +347,22 @@ send(EVENT_NAMES.inited, {
   status: true,
   openDevTools: false,
   sources: {
-    // 档位取「直连源能力 ∪ 第三方源能力」：
-    //   kw  直连与第三方都只到 flac（请求 24bit 返回的是与 flac 完全相同的 16bit
-    //       文件，同字节数同 STREAMINFO，声明了只是给菜单多一个拿不到的选项）
-    //   wy  直连能出 flac24bit
-    //   kg  直连能出到 master（星海 quviper_clear / quviper_atmos 是真母带）
-    //   tx  直连能出到 master + atmos_plus
-    //   mg  上游只到 flac，不虚标
-    // 高档位只有直连那条腿兑现得出来；直连挂了会按 FALLBACK 降到 flac，
-    // 不会拿 320K 冒充 —— 宁可报错也不偷偷降音质。
+    // 一律只声明到 flac（2026-11-10 调整）。
+    //
+    // 原先按「直连 ∪ 第三方」声明到 master/atmos，靠星海通道兑现 24bit。现在不行了：
+    //   星海取流返回 403「该音源仅对认证用户开放：请使用卡密、星海 App 或网页端访问」，
+    //   kg 的 quviper_clear/quviper_atmos、tx 的 24bit 与 atmos 全部失效。
+    // 声明了却兑现不了，菜单里就多出一堆点了必然降级的选项，用户以为在听母带，
+    // 实际拿到 16bit —— 虚标不如不标，干脆只留真实可得的上限。
+    //
+    // 实测（2026-11-10）：kw/wy/kg/tx/mg 的 flac 都能给真 16bit FLAC
+    // （kw 26.3MB、wy 31MB、kg 37.2MB、tx 31.5MB 走 QQ 官方 CDN、mg 30.1MB）。
+    // 星海恢复后想拿回高档位，在这里把 qualitys 加回来即可 —— FALLBACK 里的
+    // 高档降档链（master→flac24bit→flac）一直保留着。
     kw: { name: '酷我·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
-    wy: { name: '网易·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac', 'flac24bit'] },
-    kg: {
-      name: '酷狗·真无损', type: 'music', actions: ['musicUrl'],
-      qualitys: ['128k', '320k', 'flac', 'flac24bit', 'hires', 'atmos', 'master'],
-    },
-    tx: {
-      name: 'QQ·真无损', type: 'music', actions: ['musicUrl'],
-      qualitys: ['128k', '320k', 'flac', 'flac24bit', 'hires', 'atmos', 'atmos_plus', 'master'],
-    },
+    wy: { name: '网易·真FLAC', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
+    kg: { name: '酷狗·真无损', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
+    tx: { name: 'QQ·真无损', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
     mg: { name: '咪咕·真无损', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
   },
 })
