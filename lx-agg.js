@@ -1,7 +1,7 @@
 /*!
  * @name 聚合无损源 v2
  * @description 狐兔直连打头（五平台七档并发择优、母带/全景声），失败自动退第三方聚合兜底；加密容器一律不收
- * @version 2.1.2
+ * @version 2.1.3
  * @author 王工
  * @homepage https://github.com/WangMCweijia/lx-source-dist
  */
@@ -23,7 +23,7 @@
  * 所以加载时把源码里的 globalThis.lx 替换成注入参数，各用各的 lx 对象。
  */
 
-const AGG_VERSION = '2.1.2'
+const AGG_VERSION = '2.1.3'
 
 const ORDER_MAP = {"kw":["direct","molan","doubao"],"wy":["direct","molan","doubao"],"kg":["direct","wkg","doubao"],"mg":["direct","wmc","doubao","molan"],"tx":["direct","wmc","doubao","molan"]}
 
@@ -195,7 +195,19 @@ const quTierOf = (u) => {
   if (t === 'high' || t === 'viper') return '128'
   return t
 }
+// 部分补档源把码率直接写进 URL（酷我 bitrate$320 / bitrate=320）。
+// 能读出来就别放过：实测同一首歌两次取链，一次是 car-lv.kuwo.cn 的
+// bitrate$320 真 320K mp3，一次是 kw-bj.kuwo.cn 的 bitrate$100 AAC ——
+// 后者交给播放器就是降质，而宿主会记成「320k 已命中」，用户以为在听 320K。
+// 读不出来（网易/酷狗/QQ 的 CDN 都不带这个标记）就不猜，交给调用方判定。
+const KBR_RE = /[?&]bitrate[$=](\d+)/i
+const kbpsOf = (u) => {
+  const m = String(u).match(KBR_RE)
+  return m ? Number(m[1]) : 0
+}
 const looksDowngraded = (source, quality, u) => {
+  const k = kbpsOf(u)
+  if (k > 0 && (isLossless(quality) || quality === '320k') && k < 320) return true
   if (source !== 'kg') return false
   const t = quTierOf(u)
   if (t !== '128') return false
@@ -204,11 +216,9 @@ const looksDowngraded = (source, quality, u) => {
 
 // 各平台自有 CDN。补档源经常拿别的平台的文件顶上：实测「咪咕」的 320K/无损
 // 在咪咕自己只开放 128K 时会落到 kw-er.kuwo.cn，播放能用，但那一格并不是咪咕。
-// 这里只记日志、不改返回值（要不要这个补档由用户决定），音源测试页会按主机
-// 把这种格子标成「其他平台补档」。
 //
-// 这段代码是拼进模板字符串生成的，反斜杠转义会被 JS 吃掉，所以一律用字符串
-// 后缀比较，不用正则。
+// 归属判定只比对主机名后缀，不用正则 —— 后续若把 runtime.js 改成走模板字符串
+// 拼接（历史上有过），反斜杠会被吃掉，字符串比较没有这个问题。
 const PLATFORM_HOSTS = [
   ['kw', ['kuwo.cn']],
   ['wy', ['126.net', '127.net', '163.com']],
@@ -227,6 +237,42 @@ const hostOf = (u) => {
 }
 const hostIs = (h, suffix) =>
   h === suffix || (h.length > suffix.length && h.slice(-suffix.length - 1) === '.' + suffix)
+const queryValue = (u, keys) => {
+  const s = String(u)
+  const q = s.indexOf('?')
+  if (q < 0) return ''
+  const parts = s.slice(q + 1).split('&')
+  for (let i = 0; i < parts.length; i++) {
+    const eq = parts[i].indexOf('=')
+    if (eq < 0) continue
+    if (keys.indexOf(parts[i].slice(0, eq).toLowerCase()) < 0) continue
+    return parts[i].slice(eq + 1).toLowerCase()
+  }
+  return ''
+}
+// 补档源不一定回平台 CDN，很多回自己的转发接口：实测 tx 128k 拿到的是
+// api.qijieya.cn/meting/?server=netease&type=url&id=…，平台写在 query 里，
+// 真身要跟一次 302 才现形（落到 m801.music.126.net）。
+//
+// 壳里拿不到重定向后的最终地址：lx.request 的回调只给 statusCode / headers / body，
+// 而且部分宿主的实现顺手把 302 吃掉了。所以这里按「中转域 + query 里的平台参数」
+// 静态判定，效果等价于看最终 URL，还不额外发一次请求（命中路径上多发一跳会直接
+// 拖慢起播）。认不出来就返回空，表示「来源不明」，不参与拦截。
+const RELAY_HOSTS = ['qijieya.cn']
+const RELAY_PLATFORM = {
+  netease: 'wy', wy: 'wy',
+  tencent: 'tx', qq: 'tx', tx: 'tx',
+  kugou: 'kg', kg: 'kg',
+  kuwo: 'kw', kw: 'kw',
+  migu: 'mg', mg: 'mg',
+}
+const relayOwner = (h, u) => {
+  for (let i = 0; i < RELAY_HOSTS.length; i++) {
+    if (!hostIs(h, RELAY_HOSTS[i])) continue
+    return RELAY_PLATFORM[queryValue(u, ['server', 'platform', 'source'])] || ''
+  }
+  return ''
+}
 const hostOwner = (u) => {
   const h = hostOf(u)
   if (!h) return ''
@@ -234,8 +280,13 @@ const hostOwner = (u) => {
     const list = PLATFORM_HOSTS[i][1]
     for (let j = 0; j < list.length; j++) if (hostIs(h, list[j])) return PLATFORM_HOSTS[i][0]
   }
-  return ''
+  return relayOwner(h, u)
 }
+
+// 允许跨平台补档的平台（原因见 resolveUrl 里的说明）。
+// 只有 tx：它自己的明文链接已经拿不到了，全靠补档才有声音；
+// 其余平台自营 CDN 还出得来，维持「跨平台一律拒」，免得悄悄换了母版。
+const CROSS_OK = { tx: true }
 
 const resolveUrl = async (source, info, quality, deadline) => {
   const ids = (info && (info.songmid || info.hash || info.rid || info.id)) || ''
@@ -286,13 +337,24 @@ const resolveUrl = async (source, info, quality, deadline) => {
         log('丢弃虚标链接', source, quality, quTierOf(u), st.name)
         continue
       }
-      // 跨平台补档一律不收：请求咪咕却给 kw-er.kuwo.cn 的文件，一是那一格
-      // 根本不是咪咕，二是这类第三方中转链接常单次有效（实测复取即 410 Gone），
-      // 拿它当「成功」只会让用户过一会儿播不出来。取不到就如实失败。
+      // 跨平台补档：请求 A 平台却拿到 B 平台的 CDN 文件。原先一律拒收，理由是
+      // 「那一格根本不是 A 平台」+ 这类链接常单次有效。
+      //
+      // 2026-11-11 起腾讯的明文出口全灭：自营 CDN 只剩会员通道，HYW 只回
+      // .mgg/.mflac 加密容器，tang.api.s01s.cn 四个 song_play_url 字段全缺，
+      // 星海 403。再拦下去，tx 点任何一档都是失败。所以对 tx 放开：宁可听到
+      // 别家 CDN 的同一首歌，也不要整格打不开。
+      //
+      // 匹配精度仍由补档源自己负责（它按歌名+歌手检索、时长差超限就不取），
+      // 壳层只多一道「来源必须是可识别的平台 CDN」——来源不明的仍旧照放（tx
+      // 128k 一直是这么过的），已知跨平台的才需要这张放行单。
       const owner = hostOwner(u)
       if (owner && owner !== source) {
-        log('丢弃跨平台链接', source, quality, owner, st.name)
-        continue
+        if (CROSS_OK[source] !== true) {
+          log('丢弃跨平台链接', source, quality, owner, st.name)
+          continue
+        }
+        log('跨平台补档', source, quality, '→', owner, st.name)
       }
       log('命中', source, quality, st.name)
       cache.set(ck, { url: u, t: Date.now() })
