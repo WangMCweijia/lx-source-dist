@@ -1,7 +1,7 @@
 /*!
  * @name 聚合无损源 v2
  * @description 狐兔直连打头（五平台七档并发择优、母带/全景声），失败自动退第三方聚合兜底；加密容器一律不收
- * @version 2.1.3
+ * @version 2.1.4
  * @author 王工
  * @homepage https://github.com/WangMCweijia/lx-source-dist
  */
@@ -23,7 +23,7 @@
  * 所以加载时把源码里的 globalThis.lx 替换成注入参数，各用各的 lx 对象。
  */
 
-const AGG_VERSION = '2.1.3'
+const AGG_VERSION = '2.1.4'
 
 const ORDER_MAP = {"kw":["direct","molan","doubao"],"wy":["direct","molan","doubao"],"kg":["direct","wkg","doubao"],"mg":["direct","wmc","doubao","molan"],"tx":["direct","wmc","doubao","molan"]}
 
@@ -284,9 +284,13 @@ const hostOwner = (u) => {
 }
 
 // 允许跨平台补档的平台（原因见 resolveUrl 里的说明）。
-// 只有 tx：它自己的明文链接已经拿不到了，全靠补档才有声音；
+// tx：自营明文出口全灭，全靠补档才有声音。
+// kg：本平台三条通道（星海 yy.zddyr.top / HYW / trackercdn）在部分网络下同时不可达，
+//     而 trackercdn 对 VIP 曲一律 status=2。此时直连源已经找到同歌同歌手的跨平台
+//     资源，壳层再拦就是三档全灭（音源测试页酷狗整行 ✗）。2026-11-12 起放行，
+//     宁可标「降级/补档」也不要整格打不开；匹配精度仍由补档源自己负责。
 // 其余平台自营 CDN 还出得来，维持「跨平台一律拒」，免得悄悄换了母版。
-const CROSS_OK = { tx: true }
+const CROSS_OK = { tx: true, kg: true }
 
 const resolveUrl = async (source, info, quality, deadline) => {
   const ids = (info && (info.songmid || info.hash || info.rid || info.id)) || ''
