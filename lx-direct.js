@@ -1,7 +1,7 @@
 /*!
  * @name 狐兔
  * @description 多网关并发择优，按真实音质选路
- * @version 2.16.4
+ * @version 2.16.5
  * @author 狐兔
  * @homepage https://lxmusic.toside.cn/desktop/custom-source
  */
@@ -32,7 +32,7 @@ const MY_VER = (() => {
     const v = globalThis.lx && globalThis.lx.currentScriptInfo && globalThis.lx.currentScriptInfo.version
     if (v) return String(v)
   } catch (e) {}
-  return '2.16.4'
+  return '2.16.5'
 })()
 
 /* ============================================================================
@@ -48,7 +48,7 @@ const QQ_UIN = ''
 // 构建时注入：CI 探测连续失败 2 次的网关会被写进这个数组，运行期直接跳过
 const DISABLED_GW = []
 // 构建时间，日志里能看出线上这份是哪天打的
-const BUILT_AT = '2026-11-03T06:14:57.675Z'
+const BUILT_AT = '2026-11-15T04:06:37.735Z'
 
 /* ============================================================================
  * 网关清单（由 gw-table.mjs 内联而来，不要在这里改）
@@ -474,9 +474,15 @@ const GW = {
   /* ---------------- 聚合（HYW 公益） ---------------- */
   hyw: {
     label: 'HYW 公益聚合',
-    // 实测唯一能给 QQ 整曲 FLAC 的通道：《晴天》返回 F0000 前缀 .flac，
+    // 它曾经是唯一能给 QQ 整曲 FLAC 的通道：《晴天》返回 F0000 前缀 .flac，
     // 55,397,039 字节，文件头 fLaC。它服务端挂着 QQ 账号池，按歌名+歌手
     // 反查自己库里的同一首（所以 url 里的 mid 和你传入的 songmid 常常不一样）
+    //
+    // 【2026-11-15 实测退化】同一个 mid 现在全线回加密容器：
+    //   flac 档 -> F0M0xxx.mflac，320k/128k -> O8M0/O4M0xxx.mgg
+    // 洛雪解不开，pick 按扩展名全判 null。QQ 整曲改由 vkeys 承担，
+    // 它保留只为「哪天修好了白捡」—— 别再当主通道。
+    // 其余平台（kw/wy/kg/mg）不受影响，仍在正常出流。
     //
     // 必须用 http:// 不能 https:// —— 这台机器是裸 IP + Let's Encrypt 证书，
     // subject 为空，Electron 的证书校验必然失败（UNABLE_TO_VERIFY_LEAF_SIGNATURE）
@@ -541,6 +547,67 @@ const GW = {
     // HYW 真按档位去问上游（服务端挂账号池），母带层可以直发原档
     hiQ: true,
     native: ['kw', 'wy', 'tx', 'mg'],
+  },
+
+  /* ---------------- QQ ----------------
+   * vkeys（落月）：目前唯一还能给 QQ **整曲**的匿名通道。
+   *
+   * 文件名前缀就是码率标记，比任何自报字段都可靠（2026-11-15 实测）：
+   *   F0000xxx.flac   16bit 整曲无损      55,397,039 B（《晴天》）
+   *   AI0000xx.flac   臻品母带            155,620,200 B（《夜曲》）
+   *   M8000xxx.mp3    320k 整曲
+   *   M5000xxx.mp3    128k 整曲
+   *   RS0xxx.flac     **试听片段**，60 秒，必须拦
+   *
+   * 为什么不用 v2/geturl：同一个 mid 问 v2 永远回 RS02 试听（28kbps），
+   * 只有 v3 的 song/link 才给整曲。stellarwave v4.0.2 把两条线都挂着，
+   * 实测 v2 那条对 VIP 曲是纯废的。
+   *
+   * 命中率：连测 5 首正版曲 4 首出 F0000，1 首回 code=110001（无权限而非
+   * 试听，安全失败）。12 次连击零限流，无 key、无 cookie。
+   *
+   * 档位映射的坑：hires(11) 回的是 RS01 试听，atmos 档更不稳，
+   * 所以 flac 及以上一律问 10；只有用户明确要母带时才问 14。
+   * ------------------------------------------------------------------*/
+  vkeys: {
+    label: 'vkeys 落月QQ',
+    build: (p) => {
+      const q = String(p.quality || '').toLowerCase()
+      // 10 = 无损 / 14 = 母带 / 8 = 320k / 6 = 128k
+      const vq = q === 'master' || q === 'atmos' || q === 'atmos_plus' ? 14 : q === '320k' ? 8 : q === '128k' ? 6 : 10
+      return {
+        url: 'https://api.vkeys.cn/music/tencent/song/link?mid=' + encodeURIComponent(p.id) + '&quality=' + vq,
+        options: {
+          method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          // 实测 620~780ms，和竞速 2.4s 硬上限留足余量
+          timeout: 1600,
+        },
+      }
+    },
+    pick: (b) => {
+      // 成功是 code=0（不是 200）；110001 = 该曲无权限
+      if (!b || Number(b.code) !== 0) return null
+      const u = (b.data && b.data.url) || (typeof b.data === 'string' ? b.data : '')
+      if (!u || typeof u !== 'string' || u.indexOf('http') !== 0) return null
+      const file = String(u).split('?')[0].split('/').pop() || ''
+      // 试听片段长得和整曲一模一样，只有 RS 前缀能区分
+      if (/^RS0/i.test(file)) return null
+      if (/^AI0/i.test(file)) return { url: u, tier: 4 }
+      if (/^F0/i.test(file)) return { url: u, tier: 3 }
+      if (/^M800/i.test(file)) return { url: u, tier: 2 }
+      if (/^M500/i.test(file)) return { url: u, tier: 1 }
+      // 前缀认不出时按扩展名兜底，仍不确定的一律当有损，不虚报无损
+      const ext = ((/\.(\w+)$/.exec(file) || [])[1] || '').toLowerCase()
+      if (ext === 'flac') return { url: u, tier: 3 }
+      if (ext === 'mp3' || ext === 'm4a') return { url: u, tier: 2 }
+      return null
+    },
+    tier: 3,
+    hold: 1600,
+    // 14 档真给 155MB 母带，认原档
+    hiQ: true,
+    native: ['tx'],
   },
 
   /* ---------------- QQ ---------------- */
@@ -805,10 +872,14 @@ const ROUTE = {
     search: true,
   },
   tx: {
-    // hyw 是唯一实测能给 QQ 整曲无损的路，排第一
-    // xh 的 qq 通道概率触发人机验证，赌赢给真 QQ 链接，白捡
-    // aacab 只给 320k 整曲（不是试听），HYW 挂掉时至少还有声音
+    // vkeys 排第一（2026-11-15 起）：唯一能给 QQ 整曲无损 + 155MB 母带的
+    // 匿名通道，620~780ms 出链，命中率 4/5。
+    // hyw 从「唯一能给整曲 FLAC」退化成只能给 mflac/mgg 加密容器（播不了），
+    // pick 会全判 null，留着等它修好白捡 —— 不再指望它。
+    // xh 的 qq 通道概率触发人机验证，赌赢给真 QQ 链接
+    // aacab 只给 320k 整曲，前面都挂了时至少还有声音
     direct: [
+      { gw: 'vkeys', as: 'tx' },
       { gw: 'hyw', as: 'tx' },
       { gw: 'xh', as: 'tx' },
       { gw: 'aacab', as: 'tx' },
@@ -875,7 +946,7 @@ const GD_SEARCH = 'https://music-api.gdstudio.xyz/api.php'
  * -------------------------------------------------------------------------*/
 const CROSS_CFG = [
   { label: '酷我', as: 'kw', searcher: 'kw', gws: ['cwww', 'hyw', 'kwofficial'] },
-  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['hyw', 'xh', 'aacab'] },
+  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['vkeys', 'hyw', 'xh', 'aacab'] },
   { label: '网易', as: 'wy', searcher: 'wy', gws: ['wymeting', 'gdstudio', 'cwww'] },
   { label: '酷狗', as: 'kg', searcher: 'kg', gws: ['xh', 'kugou', 'hyw'] },
 ]
