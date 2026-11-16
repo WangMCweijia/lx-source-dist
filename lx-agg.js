@@ -1,7 +1,7 @@
 /*!
  * @name 聚合无损源 v2
  * @description 狐兔直连打头（五平台七档并发择优、母带/全景声），失败自动退第三方聚合兜底；加密容器一律不收
- * @version 2.1.5
+ * @version 2.1.6
  * @author 王工
  * @homepage https://github.com/WangMCweijia/lx-source-dist
  */
@@ -23,7 +23,7 @@
  * 所以加载时把源码里的 globalThis.lx 替换成注入参数，各用各的 lx 对象。
  */
 
-const AGG_VERSION = '2.1.5'
+const AGG_VERSION = '2.1.6'
 
 const ORDER_MAP = {"kw":["direct","molan","doubao"],"wy":["direct","molan","doubao"],"kg":["direct","wkg","doubao"],"mg":["direct","wmc","doubao","molan"],"tx":["direct","wmc","doubao","molan"]}
 
@@ -432,3 +432,91 @@ send(EVENT_NAMES.inited, {
     mg: { name: '咪咕·真无损', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] },
   },
 })
+
+/* ============================================================================
+ * 聚合源自己的新版本提醒
+ *
+ * 内联进来的每个源都自带「检查更新」，但它们的 send(updateAlert) 在 mkLx 里
+ * 被有意吞掉了 —— 那些提示会把用户引到单平台源去（例如狐兔直连 2.16.x），
+ * 点一下「更新」等于把聚合源换成一个没有第三方兜底的残缺源，而且版本号还是
+ * 另一套体系（直连 2.16.x vs 聚合 2.x），比出来的「有新版本」永远是误报。
+ *
+ * 代价是聚合源自己也不会提醒更新。这里补一份：拉本文件的远端版本号比对，
+ * 只读头 4KB，失败静默，全挂就等下个启动周期，绝不弹第二次。
+ * ==========================================================================*/
+const AGG_RAW_URLS = [
+  'https://ghfast.top/https://raw.githubusercontent.com/WangMCweijia/lx-source-dist/main/lx-agg.js',
+  'https://ghproxy.net/https://raw.githubusercontent.com/WangMCweijia/lx-source-dist/main/lx-agg.js',
+  'https://gh-proxy.com/https://raw.githubusercontent.com/WangMCweijia/lx-source-dist/main/lx-agg.js',
+  'https://raw.githubusercontent.com/WangMCweijia/lx-source-dist/main/lx-agg.js',
+]
+
+// 更新地址同样要带 ?v=<远端版本号>：镜像按完整 URL 缓存，不带参数会读到旧版
+const aggUpdateUrl = (ver) =>
+  'https://ghfast.top/https://raw.githubusercontent.com/WangMCweijia/lx-source-dist/main/lx-agg.js?v=' + String(ver || '')
+
+// 逐段比较：2.3.10 > 2.3.9，字符串比较会把 '10' 排到 '9' 前面
+const verNewer = (a, b) => {
+  const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0)
+  const pb = String(b).split('.').map((x) => parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d > 0
+  }
+  return false
+}
+
+let aggVerChecking = false
+let aggVerAlerted = false
+
+const checkAggUpdate = () => {
+  if (aggVerChecking || aggVerAlerted) return
+  aggVerChecking = true
+  let i = 0
+  const tryNext = () => {
+    if (i >= AGG_RAW_URLS.length) {
+      aggVerChecking = false // 全挂：下次启动或下次播放再试，别死在这个状态里
+      return
+    }
+    const url = AGG_RAW_URLS[i++]
+    request(url, { method: 'GET', headers: { Range: 'bytes=0-4095' }, timeout: 8000 }, (err, resp, body) => {
+      if (err) {
+        tryNext()
+        return
+      }
+      const text = String(body || (resp && resp.body) || '')
+      const m = /@version\s+(\d+\.\d+\.\d+)/.exec(text)
+      if (!m) {
+        tryNext()
+        return
+      }
+      aggVerChecking = false
+      const remote = m[1]
+      if (!verNewer(remote, AGG_VERSION)) {
+        log('版本检查：远端 v' + remote + '，已是最新')
+        return
+      }
+      aggVerAlerted = true
+      try {
+        send(EVENT_NAMES.updateAlert, {
+          log:
+            '聚合无损源有新版本 v' + remote + '（当前 v' + AGG_VERSION + '）\n\n' +
+            '更新方法：设置 → 自定义源 → 管理，先删掉旧的「聚合无损源 v2」，' +
+            '再点下面的按钮打开地址、全选复制全文，从 URL 导入。\n' +
+            '（保留旧源会多出一份同名源，两个同时启用会互相抢）\n\n' +
+            '别点「狐兔」那个源的更新提示 —— 那是直连源，换上之后第三方兜底就没了。',
+          updateUrl: aggUpdateUrl(remote),
+        })
+        log('已弹出更新提示：远端 v' + remote)
+      } catch (e) {
+        log('更新提示发送失败', (e && e.message) || e)
+      }
+    })
+  }
+  tryNext()
+}
+
+// init 完成后错峰查一次：避开启动瞬间与源内竞速抢带宽，也不影响选歌
+try {
+  setTimeout(checkAggUpdate, 3000)
+} catch (e) {}
