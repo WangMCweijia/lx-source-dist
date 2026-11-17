@@ -1,7 +1,7 @@
 /*!
  * @name 狐兔
  * @description 多网关并发择优，按真实音质选路
- * @version 2.16.5
+ * @version 2.16.9
  * @author 狐兔
  * @homepage https://lxmusic.toside.cn/desktop/custom-source
  */
@@ -32,7 +32,7 @@ const MY_VER = (() => {
     const v = globalThis.lx && globalThis.lx.currentScriptInfo && globalThis.lx.currentScriptInfo.version
     if (v) return String(v)
   } catch (e) {}
-  return '2.16.5'
+  return '2.16.9'
 })()
 
 /* ============================================================================
@@ -48,7 +48,7 @@ const QQ_UIN = ''
 // 构建时注入：CI 探测连续失败 2 次的网关会被写进这个数组，运行期直接跳过
 const DISABLED_GW = []
 // 构建时间，日志里能看出线上这份是哪天打的
-const BUILT_AT = '2026-11-15T04:06:37.735Z'
+const BUILT_AT = '2026-11-17T03:02:49.655Z'
 
 /* ============================================================================
  * 网关清单（由 gw-table.mjs 内联而来，不要在这里改）
@@ -610,6 +610,67 @@ const GW = {
     native: ['tx'],
   },
 
+  /* ---------------- s01s QQ 全档位 ---------------- */
+  s01s: {
+    label: 's01s 六档直出',
+    // 2026-11-17 复核：这个接口恢复出流了。11-15 记的「4 个 song_play_url 全缺」
+    // 是当时它只回歌名/封面等元数据，字段在、值是空串。
+    //
+    // 一次请求把 QQ 六档全给出来，全是 isure6.stream.qqmusic.qq.com 官方 CDN
+    // 的 vkey 直链，不是第三方转码：
+    //   song_play_url_sq        55,397,039 B  fLaC（与 vkeys 的 F0000 同一文件）
+    //   song_play_url_hq         6,519,764 B  m4a 320k
+    //   song_play_url_standard   1.6MB 级     m4a 128k
+    //
+    // **pq / accom 一律不取**：实测串号。《晴天》的 pq 是
+    // Q000001MvKtb0pqYPR.flac —— 哈希段 1MvKtb0pqYPR 不是 3Qui1q2u1Zho，
+    // 31.1MB / 约 176 秒，压根是别的歌；accom 同样。《十年》《夜曲》复现一致。
+    // 只有 sq / hq / standard 的哈希段与请求的 mid 对得上。
+    //
+    // 命中率：5 首正版 VIP 曲全出 sq，含 vkeys 回 110001（无权限）的《孤勇者》
+    // —— 这是它比 vkeys 强的地方。8 次连击零限流，无需 key/cookie。
+    // 返回的链接是 http://，Android 9+ 默认禁明文流量，这里统一升成 https
+    //（实测同一链接 https 直连同样 200 + 55,397,039 B）。
+    build: (p) => ({
+      url: 'https://tang.api.s01s.cn/music_open_api.php?mid=' + encodeURIComponent(p.id),
+      options: {
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+        // 实测 1.0~2.1s，偶发 3~5s 抖动。竞速窗口 RACE_HARD 是 2400，
+        // 超窗口的结果 raceAll 会经 onLate 补进下一档的缓存 —— 所以这里
+        // 放到 3000：宁可本轮慢一步，也要让 s01s 的链接进缓存，
+        // 用户拖动/重播时直接秒回（它在 vkeys 无权限的曲目上是唯一来源）
+        timeout: 3000,
+      },
+    }),
+    pick: (b, p) => {
+      if (!b || !b.song_mid) return null
+      const q = String((p && p.quality) || '').toLowerCase()
+      const up = (u) =>
+        typeof u === 'string' && u.indexOf('http') === 0 ? u.replace(/^http:/, 'https:') : ''
+      const lossless =
+        q === 'flac' || q === 'flac24bit' || q === 'hires' || q === 'atmos' || q === 'atmos_plus' || q === 'master'
+      // sizeMB 必须带上：同档位竞速按体积决胜负（template.js raceAll），
+      // 不带的话 52.83MB 的 QQ 无损会被 31MB 的跨平台网易顶掉 ——
+      // 用户点的 QQ，最后放的是别家 CDN 的同名曲
+      const mb = (v) => parseFloat(String(v || '').replace(/[^\d.]/g, '')) || 0
+      if (lossless) {
+        const u = up(b.song_play_url_sq)
+        return u ? { url: u, tier: 3, sizeMB: mb(b.song_size_sq) } : null
+      }
+      if (q === '320k' || q === '192k') {
+        const u = up(b.song_play_url_hq) || up(b.song_play_url_standard)
+        return u ? { url: u, tier: 2, sizeMB: mb(b.song_size_hq) } : null
+      }
+      const u = up(b.song_play_url_standard)
+      return u ? { url: u, tier: 1, sizeMB: mb(b.song_size_standard) } : null
+    },
+    tier: 3,
+    hold: 2200,
+    // 母带档不认：pq 串号，宁可退回 flac 也不给别的曲子
+    native: ['tx'],
+  },
+
   /* ---------------- QQ ---------------- */
   qqauth: {
     label: 'QQ 官方 vkey（需填 cookie）',
@@ -880,6 +941,8 @@ const ROUTE = {
     // aacab 只给 320k 整曲，前面都挂了时至少还有声音
     direct: [
       { gw: 'vkeys', as: 'tx' },
+      // s01s：六档一次给全，vkeys 回 110001 的曲子它能出（《孤勇者》实测）
+      { gw: 's01s', as: 'tx' },
       { gw: 'hyw', as: 'tx' },
       { gw: 'xh', as: 'tx' },
       { gw: 'aacab', as: 'tx' },
@@ -946,7 +1009,7 @@ const GD_SEARCH = 'https://music-api.gdstudio.xyz/api.php'
  * -------------------------------------------------------------------------*/
 const CROSS_CFG = [
   { label: '酷我', as: 'kw', searcher: 'kw', gws: ['cwww', 'hyw', 'kwofficial'] },
-  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['vkeys', 'hyw', 'xh', 'aacab'] },
+  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['vkeys', 's01s', 'hyw', 'xh', 'aacab'] },
   { label: '网易', as: 'wy', searcher: 'wy', gws: ['wymeting', 'gdstudio', 'cwww'] },
   { label: '酷狗', as: 'kg', searcher: 'kg', gws: ['xh', 'kugou', 'hyw'] },
 ]
@@ -1058,8 +1121,29 @@ const isReal = (u, stream) => {
   if (stream) return true // 302 型网关：地址本身是分发器，播放器自己跟随跳转
   // HYW 对咪咕回的是它自己的中转 /api/music/proxy?platform=mg&url=<咪咕CDN>，
   // 直接 200 吐音频流而不是 302。host 不在音乐 CDN 白名单里，但链是真的 ——
-  // 之前一律按"非音乐CDN"丢掉，咪咕就只剩跨平台一条路
-  if (/\/api\/music\/proxy\?/i.test(u)) return true
+  // 之前一律按"非音乐CDN"丢掉，咪咕就只剩跨平台一条路。
+  //
+  // 2026-11-17 补洞：HYW 的 QQ 通道退化成 mflac 之后，这条无脑放行把加密容器
+  // 原样交了出去（实测《孤勇者》返回
+  //   103.79.184.97/api/music/proxy?platform=tx&url=http%3A%2F%2Fwx.music.tc.qq.com%2FF0M0004egEiS1pT7d3.mflac...
+  // 扩展名藏在 url= 里，外层壳看起来是"合法中转"，播放器拿到播不了）。
+  // 现在先解出内层地址按同样规则判，解不出来才按原样放行。
+  if (/\/api\/music\/proxy\?/i.test(u)) {
+    let inner = ''
+    try {
+      inner = decodeURIComponent((/[?&]url=([^&]+)/i.exec(u) || [])[1] || '')
+    } catch (e) {
+      inner = ''
+    }
+    if (inner) {
+      const ip = String(inner).split('?')[0].toLowerCase()
+      // 加密容器解不开，任何形态都不收
+      if (/\.(mflac|mgg|mgg1|qmc|qmc0|qmc3|qmcflac|qmcogg)$/.test(ip)) return false
+      const ih = ip.split('/')[2] || ''
+      if (ih && CDN_HOST.test(ih) && AUDIO_EXT.test(ip)) return true
+    }
+    return true
+  }
   const noQuery = u.split('?')[0]
   const host = (noQuery.split('/')[2] || '').toLowerCase()
   if (!host || !CDN_HOST.test(host)) return false
