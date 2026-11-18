@@ -1,7 +1,7 @@
 /*!
  * @name 狐兔
  * @description 多网关并发择优，按真实音质选路
- * @version 2.16.9
+ * @version 2.16.10
  * @author 狐兔
  * @homepage https://lxmusic.toside.cn/desktop/custom-source
  */
@@ -32,7 +32,7 @@ const MY_VER = (() => {
     const v = globalThis.lx && globalThis.lx.currentScriptInfo && globalThis.lx.currentScriptInfo.version
     if (v) return String(v)
   } catch (e) {}
-  return '2.16.9'
+  return '2.16.10'
 })()
 
 /* ============================================================================
@@ -48,7 +48,7 @@ const QQ_UIN = ''
 // 构建时注入：CI 探测连续失败 2 次的网关会被写进这个数组，运行期直接跳过
 const DISABLED_GW = []
 // 构建时间，日志里能看出线上这份是哪天打的
-const BUILT_AT = '2026-11-17T03:02:49.655Z'
+const BUILT_AT = '2026-11-18T03:52:49.479Z'
 
 /* ============================================================================
  * 网关清单（由 gw-table.mjs 内联而来，不要在这里改）
@@ -612,14 +612,15 @@ const GW = {
 
   /* ---------------- s01s QQ 全档位 ---------------- */
   s01s: {
-    label: 's01s 六档直出',
+    label: 's01s 官方档位',
     // 2026-11-17 复核：这个接口恢复出流了。11-15 记的「4 个 song_play_url 全缺」
     // 是当时它只回歌名/封面等元数据，字段在、值是空串。
     //
-    // 一次请求把 QQ 六档全给出来，全是 isure6.stream.qqmusic.qq.com 官方 CDN
+    // 一次请求把 QQ 各档全给出来，全是 isure6.stream.qqmusic.qq.com 官方 CDN
     // 的 vkey 直链，不是第三方转码：
     //   song_play_url_sq        55,397,039 B  fLaC（与 vkeys 的 F0000 同一文件）
-    //   song_play_url_hq         6,519,764 B  m4a 320k
+    //   song_play_url_hq         6,519,764 B  m4a —— **193kbps，即 C600 192k，
+    //                            不是 320k**（11-18 读文件头实测，size/时长算得出）
     //   song_play_url_standard   1.6MB 级     m4a 128k
     //
     // **pq / accom 一律不取**：实测串号。《晴天》的 pq 是
@@ -658,8 +659,14 @@ const GW = {
         const u = up(b.song_play_url_sq)
         return u ? { url: u, tier: 3, sizeMB: mb(b.song_size_sq) } : null
       }
-      if (q === '320k' || q === '192k') {
-        const u = up(b.song_play_url_hq) || up(b.song_play_url_standard)
+      // 320k 一律不接（2026-11-18 实测纠正）：song_play_url_hq 那个 6.5MB 文件
+      // 是 193kbps 的 m4a（C600 192k），不是 320k。原来拿它当 tier 2 返回，
+      // 窗口一放宽就会抢在跨源前面交付 —— 宿主记成"320k 已命中"，用户听到 192k，
+      // 正是本工程一直在堵的虚标。宁可返回 null 让 vkeys / aacab / 跨源酷我
+      // 去给真 320k（10.9MB mp3），也不要一条"看着像 320k"的 192k。
+      if (q === '320k') return null
+      if (q === '192k') {
+        const u = up(b.song_play_url_hq)
         return u ? { url: u, tier: 2, sizeMB: mb(b.song_size_hq) } : null
       }
       const u = up(b.song_play_url_standard)
@@ -933,16 +940,22 @@ const ROUTE = {
     search: true,
   },
   tx: {
-    // vkeys 排第一（2026-11-15 起）：唯一能给 QQ 整曲无损 + 155MB 母带的
-    // 匿名通道，620~780ms 出链，命中率 4/5。
+    // s01s 排第一（2026-11-18 起）：一次请求给齐六档、全是 QQ 官方 CDN 的
+    // vkey 直链，不需要 key / cookie / 账号池 —— 也就没有「账号被风控」这种
+    // 整条通道失效的风险。11-17 接入当天 tx flac 就是它给的（31.48MB）。
+    //
+    // vkeys 退到第二位，但不是废掉：**母带档只有它能给**（AI0000 155MB），
+    // s01s 的 pq/accom 实测串号（是别的歌），已明确不取。它的毛病是上游
+    // 账号池被风控 —— 11-17、11-18 连续两天 320k/flac 回 110001，128k 反而正常，
+    // 属服务端 cookie 问题，我们改不了，只能不让它当主路。
+    //
     // hyw 从「唯一能给整曲 FLAC」退化成只能给 mflac/mgg 加密容器（播不了），
     // pick 会全判 null，留着等它修好白捡 —— 不再指望它。
     // xh 的 qq 通道概率触发人机验证，赌赢给真 QQ 链接
     // aacab 只给 320k 整曲，前面都挂了时至少还有声音
     direct: [
-      { gw: 'vkeys', as: 'tx' },
-      // s01s：六档一次给全，vkeys 回 110001 的曲子它能出（《孤勇者》实测）
       { gw: 's01s', as: 'tx' },
+      { gw: 'vkeys', as: 'tx' },
       { gw: 'hyw', as: 'tx' },
       { gw: 'xh', as: 'tx' },
       { gw: 'aacab', as: 'tx' },
@@ -1009,7 +1022,7 @@ const GD_SEARCH = 'https://music-api.gdstudio.xyz/api.php'
  * -------------------------------------------------------------------------*/
 const CROSS_CFG = [
   { label: '酷我', as: 'kw', searcher: 'kw', gws: ['cwww', 'hyw', 'kwofficial'] },
-  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['vkeys', 's01s', 'hyw', 'xh', 'aacab'] },
+  { label: 'QQ', as: 'tx', searcher: 'qq', gws: ['s01s', 'vkeys', 'hyw', 'xh', 'aacab'] },
   { label: '网易', as: 'wy', searcher: 'wy', gws: ['wymeting', 'gdstudio', 'cwww'] },
   { label: '酷狗', as: 'kg', searcher: 'kg', gws: ['xh', 'kugou', 'hyw'] },
 ]
@@ -1832,6 +1845,24 @@ const RACE_HARD_LOW = 2200
 const DIRECT_HARD = 1300
 const DIRECT_HARD_LOW = 1000
 
+// 按平台覆盖阶段一窗口（2026-11-18）。
+//
+// 只有腾讯要放宽，而且只放宽无损及以上：tx 的本平台无损现在靠 s01s
+// （一次请求给齐官方档位，1.0~1.9s，冷启动偶发 3s+），原来 1300ms 的窗口
+// 只剩 150ms 余量，抖动一下就退到跨源酷我 —— 用户点的是 QQ，放的是别家母版。
+//
+// **低档（128k/320k）故意不放宽**：实测放宽到 1900 之后，s01s 的 "hq" 抢先返回，
+// 而那个文件是 6.5MB / 193kbps 的 m4a（C600 192k），拿它顶 320k 就是虚标；
+// 而且把 1000ms 吃成 1900ms 后，跨源只剩 600ms，酷我搜索+取链来不及，
+// 结果是"既不是真 320k，也没有跨源兜底"——比不改更差。低档继续走
+// vkeys → aacab → 跨源酷我（真 10.9MB / 320k mp3）。
+//
+// 别家不动：kw/wy/kg/mg 的本平台通道都在 400ms 内出结果，加时间只会拖慢失败判定。
+// 整层上限同步抬到 2600，保证跨源仍留 700~800ms（阶段二门槛是 600ms）。
+// 注：洛雪源测试器单档约 3 秒，2600 仍在其内。
+const DIRECT_HARD_BY = { tx: { 3: 1800, 4: 1800 } }
+const RACE_HARD_BY = { tx: { 3: 2600, 4: 2600 } }
+
 const raceAll = (cands, onLate, extraP, hardMs, wantTier) =>
   new Promise((resolve) => {
     // 每个候选带上「它最高能给到几档」。收工判断必须知道还有没有高档候选
@@ -2098,7 +2129,9 @@ const resolveLayer = async (source, info, need, want) => {
   }
 
   // ---- 阶段一：本平台 ----
-  const directHard = need >= 3 ? DIRECT_HARD : DIRECT_HARD_LOW
+  const directHard =
+    (DIRECT_HARD_BY[source] && DIRECT_HARD_BY[source][need]) ||
+    (need >= 3 ? DIRECT_HARD : DIRECT_HARD_LOW)
   // 竞速门槛传 aim 而不是 need：点母带时 aim=4，flac 先回来不会触发
   // "已够档收工"，会等 tier4 的原档通道跑完（或到硬上限）再交
   let got = cands.length ? await raceAll(cands, onLate, null, directHard, aim) : null
@@ -2109,7 +2142,9 @@ const resolveLayer = async (source, info, need, want) => {
   }
 
   // ---- 阶段二：本平台这一层走不通，才跨源 ----
-  const full = need >= 3 ? RACE_HARD : RACE_HARD_LOW
+  const full =
+    (RACE_HARD_BY[source] && RACE_HARD_BY[source][need]) ||
+    (need >= 3 ? RACE_HARD : RACE_HARD_LOW)
   const elapsed = Date.now() - t0
   if (canCross) {
     const budget = full - elapsed - 100
